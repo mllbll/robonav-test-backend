@@ -1,0 +1,85 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+import json
+import websocket
+import os
+import sys
+
+app = FastAPI()
+
+# Создаем папку templates, если её нет
+os.makedirs("templates", exist_ok=True)
+templates = Jinja2Templates(directory="templates")
+
+# Адрес rosbridge, для контейнера с пробросом порта используйте localhost
+ROS_HOST = 'localhost'
+ROS_PORT = 9090
+
+
+def get_ros_topics():
+    """
+    Подключается к rosbridge через WebSocket, вызывает сервис /rosapi/topics,
+    возвращает список топиков и ошибку (если есть)
+    """
+    topics = []
+    error = None
+    
+    try:
+        ws_url = f"ws://{ROS_HOST}:{ROS_PORT}"
+        print(f"[DEBUG] Подключаемся к {ws_url}", file=sys.stderr)
+        
+        ws = websocket.create_connection(ws_url, timeout=10)
+        print("[DEBUG] Соединение установлено", file=sys.stderr)
+        
+        request_msg = {
+            "op": "call_service",
+            "service": "/rosapi/topics",
+            "args": {}
+        }
+        ws.send(json.dumps(request_msg))
+        print(f"[DEBUG] Запрос отправлен: {request_msg}", file=sys.stderr)
+        
+        response_data = ws.recv()
+        print(f"[DEBUG] Ответ получен: {response_data[:500]}", file=sys.stderr)
+        
+        response = json.loads(response_data)
+        
+        # Проверяем, что ключ 'values' есть и в нём есть 'topics' (и это список)
+        if 'values' in response and 'topics' in response['values'] and isinstance(response['values']['topics'], list):
+            topics = response['values']['topics']
+            print(f"[DEBUG] Найдено топиков: {len(topics)}", file=sys.stderr)
+        else:
+            error = f"Неверный формат ответа rosbridge: {response}"
+            print(f"[ERROR] {error}", file=sys.stderr)
+        
+        ws.close()
+        print("[DEBUG] Соединение закрыто", file=sys.stderr)
+        
+    except Exception as e:
+        error = f"Ошибка подключения к rosbridge: {str(e)}"
+        print(f"[ERROR] {error}", file=sys.stderr)
+    
+    return topics, error
+
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    topics_list, error = get_ros_topics()
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "topics": topics_list, "error": error}
+    )
+
+@app.get("/api/topics")
+async def get_topics_json():
+    topics_list, error = get_ros_topics()
+    if error:
+        return {"error": error, "topics": [], "count": 0}
+    return {"topics": topics_list, "count": len(topics_list)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
