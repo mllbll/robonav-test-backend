@@ -12,7 +12,7 @@ os.makedirs("templates", exist_ok=True)
 templates = Jinja2Templates(directory="templates")
 
 # Замените на IP-адрес робота в вашей сети
-ROBOT_IP = '10.5.0.185'
+ROBOT_IP = '192.168.0.137'
 ROSBRIDGE_PORT = 9090
 
 def get_robot_topics():
@@ -74,6 +74,15 @@ async def get_topics_json():
     if error:
         return {"error": error, "topics": [], "count": 0}
     return {"topics": topics_list, "count": len(topics_list)}
+
+@app.get("/api/robot_config")
+async def get_robot_config():
+    """Возвращает конфигурацию робота для подключения"""
+    return {
+        "robot_ip": ROBOT_IP,
+        "rosbridge_port": ROSBRIDGE_PORT,
+        "rosbridge_url": f"ws://{ROBOT_IP}:{ROSBRIDGE_PORT}"
+    }
 
 if __name__ == "__main__":
     import uvicorn
