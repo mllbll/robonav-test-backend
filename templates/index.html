@@ -233,6 +233,49 @@
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
+        .map-canvas {
+            cursor: crosshair;
+            position: relative;
+        }
+        .coordinates-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .coordinates-table {
+            margin-top: 15px;
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .coordinates-table th,
+        .coordinates-table td {
+            border: 1px solid #dee2e6;
+            padding: 8px;
+            text-align: left;
+        }
+        .coordinates-table th {
+            background: #f8f9fa;
+            font-weight: bold;
+        }
+        .coordinates-table tr:nth-child(even) {
+            background: #f8f9fa;
+        }
+        .coordinates-table button {
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        .map-wrapper {
+            position: relative;
+        }
     </style>
 </head>
 <body>
@@ -315,10 +358,36 @@
                         <button id="subscribeMap" class="btn-primary">Подписаться</button>
                         <button id="unsubscribeMap" class="btn-danger">Отключить</button>
                         <button id="centerMap" class="btn-primary">Центр</button>
+                        <button id="clearPoints" class="btn-danger">Очистить точки</button>
                     </div>
                     <div class="map-container">
-                        <canvas id="mapCanvas" class="map-canvas" width="400" height="300"></canvas>
+                        <div class="map-wrapper">
+                            <canvas id="mapCanvas" class="map-canvas" width="400" height="300"></canvas>
+                            <div class="coordinates-display" id="coordinatesDisplay" style="display: none;">
+                                X: <span id="coordX">0.00</span> м, Y: <span id="coordY">0.00</span> м
+                            </div>
+                        </div>
                         <div class="info-text" id="mapStatus">Карта не загружена</div>
+                    </div>
+                    <div style="margin-top: 15px;">
+                        <h4 style="margin-bottom: 10px; font-size: 14px;">Отмеченные точки:</h4>
+                        <table class="coordinates-table" id="coordinatesTable">
+                            <thead>
+                                <tr>
+                                    <th>№</th>
+                                    <th>X (м)</th>
+                                    <th>Y (м)</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="coordinatesTableBody">
+                                <tr>
+                                    <td colspan="4" style="text-align: center; color: #6c757d;">
+                                        Нажмите на карту, чтобы добавить точку
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -334,6 +403,10 @@
         let lastImageTime = 0;
         let mapData = null;
         let robotConfig = null;
+        let mapPoints = []; // Массив для хранения отмеченных точек
+        let mapCanvas = null;
+        let mapCtx = null;
+        let mapMouseEventsSetup = false; // Флаг для предотвращения множественной установки обработчиков
 
         // Загружаем конфигурацию робота при загрузке страницы
         async function loadRobotConfig() {
@@ -639,6 +712,10 @@
             if (mapMsg.info) {
                 updateMapStatus(`Карта: ${mapMsg.info.width}x${mapMsg.info.height}, разрешение: ${mapMsg.info.resolution.toFixed(3)} м/пикс`);
                 drawMap();
+                // Настраиваем обработчики событий мыши после загрузки карты (только один раз)
+                if (!mapMouseEventsSetup) {
+                    setupMapMouseEvents();
+                }
             } else {
                 console.error('Нет информации о карте в сообщении:', mapMsg);
                 updateMapStatus('Ошибка: нет информации о карте');
@@ -683,6 +760,224 @@
             }
 
             ctx.putImageData(imgData, 0, 0);
+
+            // Рисуем систему координат
+            drawCoordinateSystem(ctx, info);
+
+            // Рисуем отмеченные точки
+            drawMapPoints(ctx, info);
+        }
+
+        function drawCoordinateSystem(ctx, info) {
+            ctx.strokeStyle = '#007bff';
+            ctx.lineWidth = 2;
+            ctx.font = '11px Arial';
+            ctx.fillStyle = '#007bff';
+
+            const originX = info.origin?.position?.x || 0;
+            const originY = info.origin?.position?.y || 0;
+
+            // Оси координат (начало в левом нижнем углу карты в пикселях)
+            const pixelOriginX = 0;
+            const pixelOriginY = info.height;
+
+            // Ось X (горизонтальная, снизу)
+            ctx.beginPath();
+            ctx.moveTo(pixelOriginX, pixelOriginY);
+            ctx.lineTo(info.width, pixelOriginY);
+            ctx.stroke();
+
+            // Ось Y (вертикальная, слева)
+            ctx.beginPath();
+            ctx.moveTo(pixelOriginX, pixelOriginY);
+            ctx.lineTo(pixelOriginX, 0);
+            ctx.stroke();
+
+            // Стрелки на осях
+            // Стрелка на оси X
+            ctx.beginPath();
+            ctx.moveTo(info.width - 10, pixelOriginY - 5);
+            ctx.lineTo(info.width, pixelOriginY);
+            ctx.lineTo(info.width - 10, pixelOriginY + 5);
+            ctx.stroke();
+
+            // Стрелка на оси Y
+            ctx.beginPath();
+            ctx.moveTo(pixelOriginX - 5, 10);
+            ctx.lineTo(pixelOriginX, 0);
+            ctx.lineTo(pixelOriginX + 5, 10);
+            ctx.stroke();
+
+            // Подписи осей
+            ctx.fillText('X', info.width - 20, pixelOriginY - 10);
+            ctx.fillText('Y', pixelOriginX + 10, 20);
+
+            // Подпись начала координат (мировые координаты)
+            ctx.fillText(`(${originX.toFixed(2)}, ${originY.toFixed(2)})`, pixelOriginX + 5, pixelOriginY - 10);
+        }
+
+        function drawMapPoints(ctx, info) {
+            // Рисуем все отмеченные точки
+            mapPoints.forEach((point, index) => {
+                const originX = info.origin?.position?.x || 0;
+                const originY = info.origin?.position?.y || 0;
+                
+                const pixelX = Math.floor((point.x - originX) / info.resolution);
+                const pixelY = info.height - Math.floor((point.y - originY) / info.resolution);
+
+                // Проверяем, что точка в пределах карты
+                if (pixelX < 0 || pixelX >= info.width || pixelY < 0 || pixelY >= info.height) {
+                    return;
+                }
+
+                // Рисуем точку
+                ctx.fillStyle = '#dc3545';
+                ctx.beginPath();
+                ctx.arc(pixelX, pixelY, 5, 0, 2 * Math.PI);
+                ctx.fill();
+
+                // Обводка точки
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Рисуем номер точки
+                ctx.fillStyle = '#000';
+                ctx.font = 'bold 12px Arial';
+                ctx.fillText((index + 1).toString(), pixelX + 8, pixelY - 8);
+            });
+        }
+
+        // Преобразование координат мыши в координаты карты
+        function mouseToMapCoordinates(mouseX, mouseY) {
+            if (!mapData || !mapData.info) return null;
+
+            const canvas = document.getElementById('mapCanvas');
+            const rect = canvas.getBoundingClientRect();
+            
+            // Масштабирование canvas (если canvas отображается не в реальном размере)
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            // Координаты мыши относительно canvas (в пикселях карты)
+            const canvasX = (mouseX - rect.left) * scaleX;
+            const canvasY = (mouseY - rect.top) * scaleY;
+
+            const info = mapData.info;
+            
+            // Преобразуем пиксельные координаты в мировые
+            // В ROS карте начало координат находится в левом нижнем углу
+            // origin.position - это координаты левого нижнего угла карты в мировых координатах
+            const worldX = canvasX * info.resolution + (info.origin?.position?.x || 0);
+            const worldY = (info.height - canvasY) * info.resolution + (info.origin?.position?.y || 0);
+
+            return { x: worldX, y: worldY };
+        }
+
+        // Обработка событий мыши на карте
+        function setupMapMouseEvents() {
+            const canvas = document.getElementById('mapCanvas');
+            const coordsDisplay = document.getElementById('coordinatesDisplay');
+
+            if (!canvas || mapMouseEventsSetup) return;
+
+            // Обработчики событий
+            const handleMouseMove = (e) => {
+                if (!mapData) return;
+
+                const coords = mouseToMapCoordinates(e.clientX, e.clientY);
+                if (coords) {
+                    coordsDisplay.style.display = 'block';
+                    document.getElementById('coordX').textContent = coords.x.toFixed(2);
+                    document.getElementById('coordY').textContent = coords.y.toFixed(2);
+                }
+            };
+
+            const handleMouseLeave = () => {
+                coordsDisplay.style.display = 'none';
+            };
+
+            let lastClickTime = 0;
+            const handleClick = (e) => {
+                if (!mapData) return;
+                
+                // Предотвращаем множественные клики (debounce)
+                const now = Date.now();
+                if (now - lastClickTime < 200) {
+                    return; // Игнорируем клики чаще чем раз в 200мс
+                }
+                lastClickTime = now;
+                
+                // Предотвращаем всплытие события
+                e.preventDefault();
+                e.stopPropagation();
+
+                const coords = mouseToMapCoordinates(e.clientX, e.clientY);
+                if (coords) {
+                    // Проверяем, нет ли уже точки в этом месте (с точностью до 0.1м)
+                    const isDuplicate = mapPoints.some(point => 
+                        Math.abs(point.x - coords.x) < 0.1 && Math.abs(point.y - coords.y) < 0.1
+                    );
+                    
+                    if (!isDuplicate) {
+                        // Добавляем только одну точку
+                        mapPoints.push({ x: coords.x, y: coords.y });
+                        
+                        // Обновляем таблицу
+                        updateCoordinatesTable();
+                        
+                        // Перерисовываем карту с новой точкой
+                        drawMap();
+                        
+                        console.log('Добавлена точка:', coords);
+                    } else {
+                        console.log('Точка уже существует в этом месте');
+                    }
+                }
+            };
+
+            // Добавляем обработчики
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseleave', handleMouseLeave);
+            canvas.addEventListener('click', handleClick, { once: false, passive: false });
+
+            mapMouseEventsSetup = true;
+            console.log('Обработчики событий мыши установлены');
+        }
+
+        function updateCoordinatesTable() {
+            const tbody = document.getElementById('coordinatesTableBody');
+            
+            if (mapPoints.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #6c757d;">Нажмите на карту, чтобы добавить точку</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = '';
+            mapPoints.forEach((point, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td>${point.x.toFixed(2)}</td>
+                    <td>${point.y.toFixed(2)}</td>
+                    <td>
+                        <button onclick="removeMapPoint(${index})" class="btn-danger">Удалить</button>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function removeMapPoint(index) {
+            mapPoints.splice(index, 1);
+            updateCoordinatesTable();
+            drawMap();
+        }
+
+        function clearMapPoints() {
+            mapPoints = [];
+            updateCoordinatesTable();
+            drawMap();
         }
 
         function subscribeCamera() {
@@ -793,10 +1088,19 @@
         document.getElementById('subscribeMap').onclick = subscribeMap;
         document.getElementById('unsubscribeMap').onclick = unsubscribeMap;
         document.getElementById('centerMap').onclick = centerMap;
+        document.getElementById('clearPoints').onclick = clearMapPoints;
+
+        // Делаем функции доступными глобально
+        window.removeMapPoint = removeMapPoint;
+        window.clearMapPoints = clearMapPoints;
 
         // Загружаем конфигурацию при загрузке страницы
         document.addEventListener('DOMContentLoaded', () => {
             loadRobotConfig();
+            // Настраиваем обработчики событий мыши для карты
+            setTimeout(() => {
+                setupMapMouseEvents();
+            }, 100);
         });
     </script>
 </body>
