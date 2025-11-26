@@ -273,6 +273,18 @@
             padding: 2px 8px;
             font-size: 11px;
         }
+        .coord-input {
+            border: 1px solid #ced4da;
+            border-radius: 3px;
+            padding: 4px;
+            font-size: 12px;
+            text-align: center;
+        }
+        .coord-input:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+        }
         .map-wrapper {
             position: relative;
         }
@@ -377,17 +389,30 @@
                                     <th>№</th>
                                     <th>X (м)</th>
                                     <th>Y (м)</th>
+                                    <th>Угол (°)</th>
                                     <th>Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="coordinatesTableBody">
                                 <tr>
-                                    <td colspan="4" style="text-align: center; color: #6c757d;">
+                                    <td colspan="5" style="text-align: center; color: #6c757d;">
                                         Нажмите на карту, чтобы добавить точку
                                     </td>
                                 </tr>
                             </tbody>
                         </table>
+                        <div style="margin-top: 10px; text-align: center;">
+                            <button id="sendPoints" class="btn-primary" style="padding: 8px 20px; font-size: 14px;">
+                                Отправить в args_map
+                            </button>
+                            <button id="subscribeArgsMap" class="btn-primary" style="padding: 8px 20px; font-size: 14px; margin-left: 10px;">
+                                Подписаться на args_map
+                            </button>
+                        </div>
+                        <div id="argsMapStatus" style="margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 12px; display: none;">
+                            <strong>Последнее сообщение из /args_map:</strong>
+                            <pre id="argsMapData" style="margin-top: 5px; font-size: 11px; white-space: pre-wrap; word-wrap: break-word;"></pre>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -403,10 +428,12 @@
         let lastImageTime = 0;
         let mapData = null;
         let robotConfig = null;
-        let mapPoints = []; // Массив для хранения отмеченных точек
+        let mapPoints = []; // Массив для хранения отмеченных точек {x, y, angle}
         let mapCanvas = null;
         let mapCtx = null;
         let mapMouseEventsSetup = false; // Флаг для предотвращения множественной установки обработчиков
+        let argsMapPublisherActive = false; // Флаг активности publisher для args_map
+        let argsMapSubscribed = false; // Флаг подписки на args_map
 
         // Загружаем конфигурацию робота при загрузке страницы
         async function loadRobotConfig() {
@@ -459,6 +486,8 @@
                     isConnected = false;
                     cameraSubscribed = false;
                     mapSubscribed = false;
+                    argsMapPublisherActive = false;
+                    argsMapSubscribed = false;
                     updateStatus('Отключено от rosbridge', 'error-status');
                     document.getElementById('connect').disabled = false;
                     document.getElementById('disconnect').disabled = true;
@@ -479,6 +508,16 @@
             if (ws) {
                 if (cameraSubscribed) unsubscribeCamera();
                 if (mapSubscribed) unsubscribeMap();
+                if (argsMapSubscribed) unsubscribeArgsMap();
+                if (argsMapPublisherActive) {
+                    // Деактивируем publisher
+                    const unadvertiseMsg = {
+                        op: 'unadvertise',
+                        topic: '/args_map'
+                    };
+                    ws.send(JSON.stringify(unadvertiseMsg));
+                    argsMapPublisherActive = false;
+                }
                 ws.close();
             }
         }
@@ -510,6 +549,9 @@
                 } else if (msg.topic === '/map') {
                     console.log('Обработка карты:', msg.topic);
                     handleMapMessage(msg);
+                } else if (msg.topic === '/args_map') {
+                    console.log('Получено сообщение из args_map:', msg);
+                    handleArgsMapMessage(msg);
                 }
             } catch (e) {
                 console.error('Ошибка обработки сообщения:', e);
@@ -920,8 +962,8 @@
                     );
                     
                     if (!isDuplicate) {
-                        // Добавляем только одну точку
-                        mapPoints.push({ x: coords.x, y: coords.y });
+                        // Добавляем только одну точку с начальным углом 0
+                        mapPoints.push({ x: coords.x, y: coords.y, angle: 0.0 });
                         
                         // Обновляем таблицу
                         updateCoordinatesTable();
@@ -949,7 +991,7 @@
             const tbody = document.getElementById('coordinatesTableBody');
             
             if (mapPoints.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #6c757d;">Нажмите на карту, чтобы добавить точку</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #6c757d;">Нажмите на карту, чтобы добавить точку</td></tr>';
                 return;
             }
 
@@ -958,14 +1000,51 @@
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>${index + 1}</td>
-                    <td>${point.x.toFixed(2)}</td>
-                    <td>${point.y.toFixed(2)}</td>
+                    <td>
+                        <input type="number" 
+                               step="0.01" 
+                               value="${point.x.toFixed(2)}" 
+                               class="coord-input"
+                               onchange="updateMapPoint(${index}, 'x', this.value)"
+                               style="width: 80px; padding: 4px;">
+                    </td>
+                    <td>
+                        <input type="number" 
+                               step="0.01" 
+                               value="${point.y.toFixed(2)}" 
+                               class="coord-input"
+                               onchange="updateMapPoint(${index}, 'y', this.value)"
+                               style="width: 80px; padding: 4px;">
+                    </td>
+                    <td>
+                        <input type="number" 
+                               step="0.1" 
+                               value="${(point.angle || 0).toFixed(1)}" 
+                               class="coord-input"
+                               onchange="updateMapPoint(${index}, 'angle', this.value)"
+                               placeholder="0.0"
+                               style="width: 80px; padding: 4px;">
+                    </td>
                     <td>
                         <button onclick="removeMapPoint(${index})" class="btn-danger">Удалить</button>
                     </td>
                 `;
                 tbody.appendChild(row);
             });
+        }
+
+        function updateMapPoint(index, field, value) {
+            if (index >= 0 && index < mapPoints.length) {
+                const numValue = parseFloat(value);
+                if (!isNaN(numValue)) {
+                    mapPoints[index][field] = numValue;
+                    // Перерисовываем карту, если изменились координаты
+                    if (field === 'x' || field === 'y') {
+                        drawMap();
+                    }
+                    console.log(`Обновлена точка ${index + 1}, поле ${field}: ${numValue}`);
+                }
+            }
         }
 
         function removeMapPoint(index) {
@@ -978,6 +1057,89 @@
             mapPoints = [];
             updateCoordinatesTable();
             drawMap();
+        }
+
+        // Активация publisher для args_map
+        function activateArgsMapPublisher() {
+            if (!isConnected) {
+                updateStatus('Сначала подключитесь к rosbridge', 'error-status');
+                return false;
+            }
+
+            const advertiseMsg = {
+                op: 'advertise',
+                topic: '/args_map',
+                type: 'std_msgs/Float64MultiArray'
+            };
+
+            console.log('Активация publisher для args_map:', JSON.stringify(advertiseMsg));
+            ws.send(JSON.stringify(advertiseMsg));
+            argsMapPublisherActive = true;
+            return true;
+        }
+
+        // Публикация точек в топик args_map
+        function sendPointsToArgsMap() {
+            if (!isConnected) {
+                updateStatus('Сначала подключитесь к rosbridge', 'error-status');
+                return;
+            }
+
+            if (mapPoints.length === 0) {
+                updateStatus('Нет точек для отправки', 'error-status');
+                return;
+            }
+
+            // Активируем publisher, если еще не активирован
+            if (!argsMapPublisherActive) {
+                if (!activateArgsMapPublisher()) {
+                    return;
+                }
+                // Даем время на активацию publisher
+                setTimeout(() => publishPoints(), 100);
+            } else {
+                publishPoints();
+            }
+        }
+
+        function publishPoints() {
+            // Формируем массив данных: [x1, y1, angle1, x2, y2, angle2, ...]
+            const data = [];
+            mapPoints.forEach((point, index) => {
+                const x = parseFloat(point.x) || 0;
+                const y = parseFloat(point.y) || 0;
+                const angle = parseFloat(point.angle) || 0;
+                data.push(x, y, angle);
+                console.log(`Точка ${index + 1}: x=${x.toFixed(2)}, y=${y.toFixed(2)}, angle=${angle.toFixed(1)}°`);
+            });
+
+            // Формат сообщения для std_msgs/Float64MultiArray в ROS2 через rosbridge
+            const publishMsg = {
+                op: 'publish',
+                topic: '/args_map',
+                msg: {
+                    layout: {
+                        dim: [{
+                            label: 'points',
+                            size: mapPoints.length,
+                            stride: 3
+                        }],
+                        data_offset: 0
+                    },
+                    data: data
+                }
+            };
+
+            console.log('Публикация в args_map:', JSON.stringify(publishMsg, null, 2));
+            console.log(`Отправка ${mapPoints.length} точек, всего ${data.length} значений`);
+            
+            try {
+                ws.send(JSON.stringify(publishMsg));
+                updateStatus(`✓ Отправлено ${mapPoints.length} точек в /args_map`, 'success');
+            } catch (error) {
+                console.error('Ошибка публикации:', error);
+                updateStatus('Ошибка публикации в /args_map', 'error-status');
+            }
         }
 
         function subscribeCamera() {
@@ -1080,6 +1242,107 @@
             document.getElementById('mapStatus').textContent = text;
         }
 
+        // Обработка сообщений из args_map
+        function handleArgsMapMessage(msg) {
+            if (!msg.msg || !msg.msg.data) {
+                console.warn('Некорректное сообщение из args_map:', msg);
+                return;
+            }
+
+            const data = msg.msg.data;
+            const layout = msg.msg.layout;
+            
+            // Парсим данные: [x1, y1, angle1, x2, y2, angle2, ...]
+            const points = [];
+            for (let i = 0; i < data.length; i += 3) {
+                if (i + 2 < data.length) {
+                    points.push({
+                        x: data[i],
+                        y: data[i + 1],
+                        angle: data[i + 2]
+                    });
+                }
+            }
+
+            // Отображаем полученные данные
+            const statusDiv = document.getElementById('argsMapStatus');
+            const dataDiv = document.getElementById('argsMapData');
+            
+            if (statusDiv && dataDiv) {
+                statusDiv.style.display = 'block';
+                dataDiv.textContent = JSON.stringify({
+                    количество_точек: points.length,
+                    точки: points.map((p, i) => ({
+                        номер: i + 1,
+                        x: p.x.toFixed(2) + ' м',
+                        y: p.y.toFixed(2) + ' м',
+                        угол: p.angle.toFixed(1) + '°'
+                    })),
+                    raw_data: data
+                }, null, 2);
+            }
+
+            console.log('Получено из args_map:', points.length, 'точек');
+        }
+
+        // Подписка на топик args_map для проверки
+        function subscribeArgsMap() {
+            if (!isConnected) {
+                updateStatus('Сначала подключитесь к rosbridge', 'error-status');
+                return;
+            }
+
+            if (argsMapSubscribed) {
+                unsubscribeArgsMap();
+                return;
+            }
+
+            const subscribeMsg = {
+                op: 'subscribe',
+                topic: '/args_map',
+                type: 'std_msgs/Float64MultiArray'
+            };
+
+            console.log('Подписка на args_map:', JSON.stringify(subscribeMsg));
+            ws.send(JSON.stringify(subscribeMsg));
+            argsMapSubscribed = true;
+            
+            const btn = document.getElementById('subscribeArgsMap');
+            if (btn) {
+                btn.textContent = 'Отписаться от args_map';
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-danger');
+            }
+            
+            updateStatus('Подписка на /args_map активирована', 'success');
+        }
+
+        function unsubscribeArgsMap() {
+            if (!isConnected || !argsMapSubscribed) return;
+
+            const unsubscribeMsg = {
+                op: 'unsubscribe',
+                topic: '/args_map'
+            };
+
+            ws.send(JSON.stringify(unsubscribeMsg));
+            argsMapSubscribed = false;
+            
+            const btn = document.getElementById('subscribeArgsMap');
+            if (btn) {
+                btn.textContent = 'Подписаться на args_map';
+                btn.classList.remove('btn-danger');
+                btn.classList.add('btn-primary');
+            }
+            
+            const statusDiv = document.getElementById('argsMapStatus');
+            if (statusDiv) {
+                statusDiv.style.display = 'none';
+            }
+            
+            updateStatus('Отписка от /args_map', 'info');
+        }
+
         // Инициализация
         document.getElementById('connect').onclick = connect;
         document.getElementById('disconnect').onclick = disconnect;
@@ -1089,10 +1352,13 @@
         document.getElementById('unsubscribeMap').onclick = unsubscribeMap;
         document.getElementById('centerMap').onclick = centerMap;
         document.getElementById('clearPoints').onclick = clearMapPoints;
+        document.getElementById('sendPoints').onclick = sendPointsToArgsMap;
+        document.getElementById('subscribeArgsMap').onclick = subscribeArgsMap;
 
         // Делаем функции доступными глобально
         window.removeMapPoint = removeMapPoint;
         window.clearMapPoints = clearMapPoints;
+        window.updateMapPoint = updateMapPoint;
 
         // Загружаем конфигурацию при загрузке страницы
         document.addEventListener('DOMContentLoaded', () => {
