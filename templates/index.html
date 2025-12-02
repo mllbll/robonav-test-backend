@@ -371,6 +371,18 @@
                         <button id="unsubscribeMap" class="btn-danger">Отключить</button>
                         <button id="centerMap" class="btn-primary">Центр</button>
                         <button id="clearPoints" class="btn-danger">Очистить точки</button>
+                        <button id="clearPath" class="btn-danger">Очистить путь</button>
+                        <button id="emergencyStop" class="btn-danger" style="background: #dc3545; font-weight: bold;">СТОП</button>
+                    </div>
+                    <div class="controls-row" style="margin-top: 8px;">
+                        <button id="subscribeOdom" class="btn-primary">Подписаться на одометрию</button>
+                        <button id="unsubscribeOdom" class="btn-danger">Отключить одометрию</button>
+                        <span id="robotStatus" style="margin-left: 10px; padding: 4px 8px; background: #f8f9fa; border-radius: 3px; font-size: 12px;">
+                            Робот: не подключен
+                        </span>
+                    </div>
+                    <div id="taskStatus" style="margin-top: 8px; padding: 8px; background: #d1ecf1; border-radius: 4px; font-size: 12px; display: none;">
+                        <strong>Статус задания:</strong> <span id="taskStatusText">Ожидание...</span>
                     </div>
                     <div class="map-container">
                         <div class="map-wrapper">
@@ -434,6 +446,11 @@
         let mapMouseEventsSetup = false; // Флаг для предотвращения множественной установки обработчиков
         let argsMapPublisherActive = false; // Флаг активности publisher для args_map
         let argsMapSubscribed = false; // Флаг подписки на args_map
+        let odomSubscribed = false; // Флаг подписки на одометрию
+        let robotPosition = { x: 0, y: 0, yaw: 0 }; // Позиция робота
+        let robotPath = []; // Массив для хранения пути робота
+        let maxPathPoints = 1000; // Максимальное количество точек пути
+        let taskStatusSubscribed = false; // Флаг подписки на статус задания
 
         // Загружаем конфигурацию робота при загрузке страницы
         async function loadRobotConfig() {
@@ -488,7 +505,10 @@
                     mapSubscribed = false;
                     argsMapPublisherActive = false;
                     argsMapSubscribed = false;
+                    odomSubscribed = false;
+                    taskStatusSubscribed = false;
                     updateStatus('Отключено от rosbridge', 'error-status');
+                    updateRobotStatus('не подключен');
                     document.getElementById('connect').disabled = false;
                     document.getElementById('disconnect').disabled = true;
                     console.log('WebSocket соединение закрыто');
@@ -509,6 +529,7 @@
                 if (cameraSubscribed) unsubscribeCamera();
                 if (mapSubscribed) unsubscribeMap();
                 if (argsMapSubscribed) unsubscribeArgsMap();
+                if (odomSubscribed) unsubscribeOdom();
                 if (argsMapPublisherActive) {
                     // Деактивируем publisher
                     const unadvertiseMsg = {
@@ -552,6 +573,10 @@
                 } else if (msg.topic === '/args_map') {
                     console.log('Получено сообщение из args_map:', msg);
                     handleArgsMapMessage(msg);
+                } else if (msg.topic && (msg.topic.includes('odom') || msg.topic.includes('wheeled_base_controller/odom'))) {
+                    handleOdomMessage(msg);
+                } else if (msg.topic && (msg.topic.includes('task_status') || msg.topic.includes('mission_status'))) {
+                    handleTaskStatusMessage(msg);
                 }
             } catch (e) {
                 console.error('Ошибка обработки сообщения:', e);
@@ -806,8 +831,14 @@
             // Рисуем систему координат
             drawCoordinateSystem(ctx, info);
 
+            // Рисуем путь робота
+            drawRobotPath(ctx, info);
+
             // Рисуем отмеченные точки
             drawMapPoints(ctx, info);
+
+            // Рисуем робота
+            drawRobot(ctx, info);
         }
 
         function drawCoordinateSystem(ctx, info) {
@@ -858,24 +889,31 @@
             ctx.fillText(`(${originX.toFixed(2)}, ${originY.toFixed(2)})`, pixelOriginX + 5, pixelOriginY - 10);
         }
 
+        // Преобразование мировых координат в пиксели карты
+        function worldToPixel(worldX, worldY, info) {
+            const originX = info.origin?.position?.x || 0;
+            const originY = info.origin?.position?.y || 0;
+            
+            const pixelX = Math.floor((worldX - originX) / info.resolution);
+            const pixelY = info.height - Math.floor((worldY - originY) / info.resolution);
+            
+            return { x: pixelX, y: pixelY };
+        }
+
         function drawMapPoints(ctx, info) {
             // Рисуем все отмеченные точки
             mapPoints.forEach((point, index) => {
-                const originX = info.origin?.position?.x || 0;
-                const originY = info.origin?.position?.y || 0;
-                
-                const pixelX = Math.floor((point.x - originX) / info.resolution);
-                const pixelY = info.height - Math.floor((point.y - originY) / info.resolution);
+                const pixel = worldToPixel(point.x, point.y, info);
 
                 // Проверяем, что точка в пределах карты
-                if (pixelX < 0 || pixelX >= info.width || pixelY < 0 || pixelY >= info.height) {
+                if (pixel.x < 0 || pixel.x >= info.width || pixel.y < 0 || pixel.y >= info.height) {
                     return;
                 }
 
                 // Рисуем точку
                 ctx.fillStyle = '#dc3545';
                 ctx.beginPath();
-                ctx.arc(pixelX, pixelY, 5, 0, 2 * Math.PI);
+                ctx.arc(pixel.x, pixel.y, 5, 0, 2 * Math.PI);
                 ctx.fill();
 
                 // Обводка точки
@@ -886,8 +924,76 @@
                 // Рисуем номер точки
                 ctx.fillStyle = '#000';
                 ctx.font = 'bold 12px Arial';
-                ctx.fillText((index + 1).toString(), pixelX + 8, pixelY - 8);
+                ctx.fillText((index + 1).toString(), pixel.x + 8, pixel.y - 8);
             });
+        }
+
+        // Рисование пути робота
+        function drawRobotPath(ctx, info) {
+            if (robotPath.length < 2) return;
+
+            ctx.strokeStyle = '#28a745';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            for (let i = 0; i < robotPath.length; i++) {
+                const pixel = worldToPixel(robotPath[i].x, robotPath[i].y, info);
+                
+                if (i === 0) {
+                    ctx.moveTo(pixel.x, pixel.y);
+                } else {
+                    ctx.lineTo(pixel.x, pixel.y);
+                }
+            }
+
+            ctx.stroke();
+        }
+
+        // Рисование робота на карте
+        function drawRobot(ctx, info) {
+            if (!robotPosition || (robotPosition.x === 0 && robotPosition.y === 0 && robotPosition.yaw === 0)) {
+                return;
+            }
+
+            const pixel = worldToPixel(robotPosition.x, robotPosition.y, info);
+
+            // Проверяем, что робот в пределах карты
+            if (pixel.x < 0 || pixel.x >= info.width || pixel.y < 0 || pixel.y >= info.height) {
+                return;
+            }
+
+            ctx.save();
+            ctx.translate(pixel.x, pixel.y);
+            ctx.rotate(-robotPosition.yaw); // Поворачиваем на угол робота
+
+            // Тело робота (прямоугольник)
+            const robotWidth = 15;
+            const robotHeight = 10;
+
+            ctx.fillStyle = '#007bff';
+            ctx.fillRect(-robotWidth/2, -robotHeight/2, robotWidth, robotHeight);
+            
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(-robotWidth/2, -robotHeight/2, robotWidth, robotHeight);
+
+            // Направление робота (стрелка)
+            ctx.strokeStyle = '#ffff00';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(robotWidth/2 + 5, 0);
+            ctx.stroke();
+
+            // Стрелка
+            ctx.beginPath();
+            ctx.moveTo(robotWidth/2 + 5, 0);
+            ctx.lineTo(robotWidth/2, -3);
+            ctx.moveTo(robotWidth/2 + 5, 0);
+            ctx.lineTo(robotWidth/2, 3);
+            ctx.stroke();
+
+            ctx.restore();
         }
 
         // Преобразование координат мыши в координаты карты
@@ -906,12 +1012,14 @@
             const canvasY = (mouseY - rect.top) * scaleY;
 
             const info = mapData.info;
+            const originX = info.origin?.position?.x || 0;
+            const originY = info.origin?.position?.y || 0;
             
             // Преобразуем пиксельные координаты в мировые
             // В ROS карте начало координат находится в левом нижнем углу
             // origin.position - это координаты левого нижнего угла карты в мировых координатах
-            const worldX = canvasX * info.resolution + (info.origin?.position?.x || 0);
-            const worldY = (info.height - canvasY) * info.resolution + (info.origin?.position?.y || 0);
+            const worldX = canvasX * info.resolution + originX;
+            const worldY = (info.height - canvasY) * info.resolution + originY;
 
             return { x: worldX, y: worldY };
         }
@@ -1226,7 +1334,218 @@
                 updateMapStatus('Карта не загружена');
                 return;
             }
-            updateMapStatus('Карта отцентрирована');
+            
+            const info = mapData.info;
+            const originX = info.origin?.position?.x || 0;
+            const originY = info.origin?.position?.y || 0;
+            
+            // Если origin в нуле, вычисляем центр карты
+            if (originX === 0 && originY === 0) {
+                const centerX = (info.width * info.resolution) / 2;
+                const centerY = (info.height * info.resolution) / 2;
+                updateMapStatus(`Центр карты: (${centerX.toFixed(2)}, ${centerY.toFixed(2)})`);
+            } else {
+                updateMapStatus(`Origin карты: (${originX.toFixed(2)}, ${originY.toFixed(2)})`);
+            }
+        }
+
+        // Обработка сообщений одометрии
+        function handleOdomMessage(msg) {
+            if (!msg.msg || !msg.msg.pose) return;
+
+            const odom = msg.msg;
+            const pose = odom.pose.pose;
+            
+            if (pose.position) {
+                robotPosition.x = pose.position.x;
+                robotPosition.y = pose.position.y;
+                
+                // Вычисляем yaw из quaternion
+                const q = pose.orientation;
+                robotPosition.yaw = Math.atan2(
+                    2 * (q.w * q.z + q.x * q.y),
+                    1 - 2 * (q.y * q.y + q.z * q.z)
+                );
+
+                // Добавляем точку в путь
+                robotPath.push({ x: robotPosition.x, y: robotPosition.y });
+                
+                // Ограничиваем размер пути
+                if (robotPath.length > maxPathPoints) {
+                    robotPath.shift();
+                }
+
+                // Обновляем статус робота
+                updateRobotStatus(`X: ${robotPosition.x.toFixed(2)} м, Y: ${robotPosition.y.toFixed(2)} м, θ: ${(robotPosition.yaw * 180 / Math.PI).toFixed(1)}°`);
+
+                // Перерисовываем карту
+                if (mapData) {
+                    drawMap();
+                }
+            }
+        }
+
+        // Обработка статуса задания
+        function handleTaskStatusMessage(msg) {
+            if (!msg.msg) return;
+
+            const statusDiv = document.getElementById('taskStatus');
+            const statusText = document.getElementById('taskStatusText');
+            
+            if (!statusDiv || !statusText) return;
+
+            statusDiv.style.display = 'block';
+            
+            // Парсим сообщение (может быть разный формат)
+            let status = '';
+            if (typeof msg.msg === 'string') {
+                status = msg.msg;
+            } else if (msg.msg.data !== undefined) {
+                status = msg.msg.data.toString();
+            } else if (msg.msg.status !== undefined) {
+                status = msg.msg.status.toString();
+            } else {
+                status = JSON.stringify(msg.msg);
+            }
+
+            statusText.textContent = status;
+
+            // Меняем цвет в зависимости от статуса
+            if (status.toLowerCase().includes('заверш') || status.toLowerCase().includes('done') || status.toLowerCase().includes('complete')) {
+                statusDiv.style.background = '#d4edda';
+                statusDiv.style.color = '#155724';
+            } else if (status.toLowerCase().includes('ошибк') || status.toLowerCase().includes('error') || status.toLowerCase().includes('fail')) {
+                statusDiv.style.background = '#f8d7da';
+                statusDiv.style.color = '#721c24';
+            } else {
+                statusDiv.style.background = '#d1ecf1';
+                statusDiv.style.color = '#0c5460';
+            }
+        }
+
+        function updateRobotStatus(text) {
+            const statusEl = document.getElementById('robotStatus');
+            if (statusEl) {
+                statusEl.textContent = `Робот: ${text}`;
+            }
+        }
+
+        // Подписка на одометрию
+        function subscribeOdom() {
+            if (!isConnected) {
+                updateStatus('Сначала подключитесь к rosbridge', 'error-status');
+                return;
+            }
+
+            // Пробуем разные топики одометрии
+            const odomTopics = [
+                '/wheeled_base_controller/odom',
+                '/odom',
+                '/robot/odom'
+            ];
+
+            // Подписываемся на первый топик
+            const subscribeMsg = {
+                op: 'subscribe',
+                topic: odomTopics[0],
+                type: 'nav_msgs/Odometry'
+            };
+
+            console.log('Подписка на одометрию:', JSON.stringify(subscribeMsg));
+            ws.send(JSON.stringify(subscribeMsg));
+            odomSubscribed = true;
+            updateRobotStatus('подключен');
+
+            // Также подписываемся на статус задания
+            subscribeTaskStatus();
+        }
+
+        function subscribeTaskStatus() {
+            if (!isConnected || taskStatusSubscribed) return;
+
+            // Пробуем разные топики статуса задания
+            const statusTopics = [
+                '/task_status',
+                '/mission_status',
+                '/robot/task_status',
+                '/navigation_status'
+            ];
+
+            // Подписываемся на первый топик
+            const subscribeMsg = {
+                op: 'subscribe',
+                topic: statusTopics[0],
+                type: 'std_msgs/String'
+            };
+
+            console.log('Подписка на статус задания:', JSON.stringify(subscribeMsg));
+            ws.send(JSON.stringify(subscribeMsg));
+            taskStatusSubscribed = true;
+        }
+
+        function unsubscribeOdom() {
+            if (!isConnected || !odomSubscribed) return;
+
+            const unsubscribeMsg = {
+                op: 'unsubscribe',
+                topic: '/wheeled_base_controller/odom'
+            };
+
+            ws.send(JSON.stringify(unsubscribeMsg));
+            odomSubscribed = false;
+            updateRobotStatus('отключен');
+        }
+
+        function clearRobotPath() {
+            robotPath = [];
+            if (mapData) {
+                drawMap();
+            }
+            console.log('Путь робота очищен');
+        }
+
+        // Экстренная остановка
+        function emergencyStop() {
+            if (!isConnected) {
+                updateStatus('Сначала подключитесь к rosbridge', 'error-status');
+                return;
+            }
+
+            // Публикуем команду остановки в топик cmd_vel
+            const cmdVelTopics = [
+                '/wheeled_base_controller/cmd_vel_unstamped',
+                '/cmd_vel',
+                '/robot/cmd_vel'
+            ];
+
+            // Активируем publisher для cmd_vel
+            const advertiseMsg = {
+                op: 'advertise',
+                topic: cmdVelTopics[0],
+                type: 'geometry_msgs/Twist'
+            };
+
+            ws.send(JSON.stringify(advertiseMsg));
+
+            // Отправляем команду остановки несколько раз
+            setTimeout(() => {
+                for (let i = 0; i < 5; i++) {
+                    setTimeout(() => {
+                        const stopMsg = {
+                            op: 'publish',
+                            topic: cmdVelTopics[0],
+                            msg: {
+                                linear: { x: 0.0, y: 0.0, z: 0.0 },
+                                angular: { x: 0.0, y: 0.0, z: 0.0 }
+                            }
+                        };
+                        ws.send(JSON.stringify(stopMsg));
+                    }, i * 50);
+                }
+            }, 100);
+
+            updateStatus('🚨 ЭКСТРЕННАЯ ОСТАНОВКА', 'error-status');
+            console.log('Экстренная остановка активирована');
         }
 
         function updateStatus(text, type) {
@@ -1352,6 +1671,10 @@
         document.getElementById('unsubscribeMap').onclick = unsubscribeMap;
         document.getElementById('centerMap').onclick = centerMap;
         document.getElementById('clearPoints').onclick = clearMapPoints;
+        document.getElementById('clearPath').onclick = clearRobotPath;
+        document.getElementById('emergencyStop').onclick = emergencyStop;
+        document.getElementById('subscribeOdom').onclick = subscribeOdom;
+        document.getElementById('unsubscribeOdom').onclick = unsubscribeOdom;
         document.getElementById('sendPoints').onclick = sendPointsToArgsMap;
         document.getElementById('subscribeArgsMap').onclick = subscribeArgsMap;
 
