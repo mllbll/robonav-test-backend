@@ -888,30 +888,32 @@
             // Очищаем canvas
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Применяем масштаб и смещение
+            // Создаем временный canvas для отрисовки всего содержимого
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = info.width;
+            tempCanvas.height = info.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Рисуем карту на временном canvas
+            tempCtx.putImageData(imgData, 0, 0);
+
+            // Рисуем систему координат на временном canvas
+            drawCoordinateSystem(tempCtx, info);
+
+            // Рисуем путь робота на временном canvas
+            drawRobotPath(tempCtx, info);
+
+            // Рисуем отмеченные точки на временном canvas
+            drawMapPoints(tempCtx, info);
+
+            // Рисуем робота на временном canvas
+            drawRobot(tempCtx, info);
+            
+            // Применяем масштаб и смещение при копировании на основной canvas
             ctx.save();
-            
-            // Смещаем начало координат
             ctx.translate(mapPanX, mapPanY);
-            
-            // Применяем масштаб
             ctx.scale(mapScale, mapScale);
-            
-            // Рисуем карту
-            ctx.putImageData(imgData, 0, 0);
-
-            // Рисуем систему координат
-            drawCoordinateSystem(ctx, info);
-
-            // Рисуем путь робота
-            drawRobotPath(ctx, info);
-
-            // Рисуем отмеченные точки
-            drawMapPoints(ctx, info);
-
-            // Рисуем робота
-            drawRobot(ctx, info);
-            
+            ctx.drawImage(tempCanvas, 0, 0);
             ctx.restore();
         }
 
@@ -1211,7 +1213,8 @@
             let lastMouseY = 0;
 
             const handleMouseDown = (e) => {
-                if (e.button === 0) { // Левая кнопка мыши
+                if (e.button === 1) { // Колесико мыши (middle button)
+                    e.preventDefault(); // Предотвращаем прокрутку страницы
                     isDragging = true;
                     lastMouseX = e.clientX;
                     lastMouseY = e.clientY;
@@ -1275,8 +1278,24 @@
                 handleMouseLeave();
                 handleMouseUp();
             });
-            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mousedown', (e) => {
+                handleMouseDown(e);
+                // Предотвращаем прокрутку страницы при нажатии колесика
+                if (e.button === 1) {
+                    e.preventDefault();
+                }
+            });
             canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('auxclick', (e) => {
+                // Предотвращаем стандартное поведение при клике колесиком
+                if (e.button === 1) {
+                    e.preventDefault();
+                }
+            });
+            canvas.addEventListener('contextmenu', (e) => {
+                // Предотвращаем контекстное меню при клике правой кнопкой
+                e.preventDefault();
+            });
             canvas.addEventListener('wheel', handleWheel, { passive: false });
             canvas.addEventListener('click', handleClick, { once: false, passive: false });
 
