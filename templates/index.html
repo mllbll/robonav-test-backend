@@ -381,6 +381,13 @@
                             Робот: не подключен
                         </span>
                     </div>
+                    <div class="controls-row" style="margin-top: 8px; font-size: 11px; color: #6c757d;">
+                        <span>Коррекция смещения:</span>
+                        <input type="number" id="offsetX" step="0.01" value="0" placeholder="X смещение" style="width: 80px; padding: 2px;">
+                        <input type="number" id="offsetY" step="0.01" value="0" placeholder="Y смещение" style="width: 80px; padding: 2px;">
+                        <button id="applyOffset" class="btn-primary" style="padding: 2px 8px; font-size: 11px;">Применить</button>
+                        <button id="resetOffset" class="btn-danger" style="padding: 2px 8px; font-size: 11px;">Сбросить</button>
+                    </div>
                     <div id="taskStatus" style="margin-top: 8px; padding: 8px; background: #d1ecf1; border-radius: 4px; font-size: 12px; display: none;">
                         <strong>Статус задания:</strong> <span id="taskStatusText">Ожидание...</span>
                     </div>
@@ -451,6 +458,8 @@
         let robotPath = []; // Массив для хранения пути робота
         let maxPathPoints = 1000; // Максимальное количество точек пути
         let taskStatusSubscribed = false; // Флаг подписки на статус задания
+        let offsetX = 0; // Коррекция смещения по X
+        let offsetY = 0; // Коррекция смещения по Y
 
         // Загружаем конфигурацию робота при загрузке страницы
         async function loadRobotConfig() {
@@ -777,7 +786,19 @@
             mapData = mapMsg;
 
             if (mapMsg.info) {
-                updateMapStatus(`Карта: ${mapMsg.info.width}x${mapMsg.info.height}, разрешение: ${mapMsg.info.resolution.toFixed(3)} м/пикс`);
+                const originX = mapMsg.info.origin?.position?.x || 0;
+                const originY = mapMsg.info.origin?.position?.y || 0;
+                const originZ = mapMsg.info.origin?.position?.z || 0;
+                
+                console.log('Информация о карте:', {
+                    width: mapMsg.info.width,
+                    height: mapMsg.info.height,
+                    resolution: mapMsg.info.resolution,
+                    origin: { x: originX, y: originY, z: originZ },
+                    orientation: mapMsg.info.origin?.orientation
+                });
+                
+                updateMapStatus(`Карта: ${mapMsg.info.width}x${mapMsg.info.height}, разрешение: ${mapMsg.info.resolution.toFixed(3)} м/пикс, origin: (${originX.toFixed(2)}, ${originY.toFixed(2)})`);
                 drawMap();
                 // Настраиваем обработчики событий мыши после загрузки карты (только один раз)
                 if (!mapMouseEventsSetup) {
@@ -891,11 +912,21 @@
 
         // Преобразование мировых координат в пиксели карты
         function worldToPixel(worldX, worldY, info) {
+            if (!info) return { x: 0, y: 0 };
+            
             const originX = info.origin?.position?.x || 0;
             const originY = info.origin?.position?.y || 0;
             
-            const pixelX = Math.floor((worldX - originX) / info.resolution);
-            const pixelY = info.height - Math.floor((worldY - originY) / info.resolution);
+            // Применяем коррекцию смещения
+            const correctedX = worldX + offsetX;
+            const correctedY = worldY + offsetY;
+            
+            // Преобразуем мировые координаты в пиксели карты
+            // origin - это координаты левого нижнего угла карты в мировых координатах
+            // resolution - размер пикселя в метрах
+            const pixelX = Math.floor((correctedX - originX) / info.resolution);
+            // В ROS карте Y растет вверх, но на экране Y растет вниз, поэтому инвертируем
+            const pixelY = info.height - Math.floor((correctedY - originY) / info.resolution);
             
             return { x: pixelX, y: pixelY };
         }
@@ -1367,6 +1398,21 @@
                     1 - 2 * (q.y * q.y + q.z * q.z)
                 );
 
+                // Отладочная информация
+                if (mapData && mapData.info) {
+                    const pixel = worldToPixel(robotPosition.x, robotPosition.y, mapData.info);
+                    const originX = mapData.info.origin?.position?.x || 0;
+                    const originY = mapData.info.origin?.position?.y || 0;
+                    
+                    console.log('Робот:', {
+                        world: { x: robotPosition.x.toFixed(2), y: robotPosition.y.toFixed(2) },
+                        pixel: { x: pixel.x, y: pixel.y },
+                        origin: { x: originX, y: originY },
+                        resolution: mapData.info.resolution,
+                        mapSize: { width: mapData.info.width, height: mapData.info.height }
+                    });
+                }
+
                 // Добавляем точку в путь
                 robotPath.push({ x: robotPosition.x, y: robotPosition.y });
                 
@@ -1668,6 +1714,30 @@
         document.getElementById('emergencyStop').onclick = emergencyStop;
         document.getElementById('subscribeOdom').onclick = subscribeOdom;
         document.getElementById('unsubscribeOdom').onclick = unsubscribeOdom;
+        document.getElementById('applyOffset').onclick = applyOffset;
+        document.getElementById('resetOffset').onclick = resetOffset;
+
+        function applyOffset() {
+            offsetX = parseFloat(document.getElementById('offsetX').value) || 0;
+            offsetY = parseFloat(document.getElementById('offsetY').value) || 0;
+            console.log('Применено смещение:', { offsetX, offsetY });
+            if (mapData) {
+                drawMap();
+            }
+            updateStatus(`Смещение применено: X=${offsetX.toFixed(2)} м, Y=${offsetY.toFixed(2)} м`, 'info');
+        }
+
+        function resetOffset() {
+            offsetX = 0;
+            offsetY = 0;
+            document.getElementById('offsetX').value = 0;
+            document.getElementById('offsetY').value = 0;
+            console.log('Смещение сброшено');
+            if (mapData) {
+                drawMap();
+            }
+            updateStatus('Смещение сброшено', 'info');
+        }
         document.getElementById('sendPoints').onclick = sendPointsToArgsMap;
         document.getElementById('subscribeArgsMap').onclick = subscribeArgsMap;
 
