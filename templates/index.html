@@ -1297,7 +1297,7 @@
                 
                 // Изменяем масштаб
                 const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-                const newScale = Math.max(0.5, Math.min(5.0, mapScale * zoomFactor));
+                const newScale = Math.max(1.0, Math.min(5.0, mapScale * zoomFactor));
                 
                 // Корректируем смещение, чтобы точка под курсором осталась на месте
                 mapPanX = mouseX - mouseXInMap * newScale;
