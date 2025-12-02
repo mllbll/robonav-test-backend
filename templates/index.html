@@ -166,7 +166,7 @@
             flex-direction: column;
             justify-content: center;
             min-height: 400px;
-            overflow: hidden;
+            overflow: auto;
             position: relative;
         }
         .map-canvas {
@@ -241,8 +241,8 @@
             image-rendering: pixelated;
             image-rendering: -moz-crisp-edges;
             image-rendering: crisp-edges;
-            max-width: 100%;
-            max-height: 100%;
+            display: block;
+            margin: 0 auto;
         }
         .map-canvas:active {
             cursor: grabbing;
@@ -843,17 +843,12 @@
             const info = mapData.info;
             const data = mapData.data;
 
-            // Устанавливаем размер canvas с учетом масштаба
-            const displayWidth = Math.floor(info.width * mapScale);
-            const displayHeight = Math.floor(info.height * mapScale);
-            
-            // Сохраняем оригинальный размер для вычислений
+            // Размер canvas остается постоянным (оригинальный размер карты)
             canvas.width = info.width;
             canvas.height = info.height;
             
-            // Устанавливаем размер отображения
-            canvas.style.width = displayWidth + 'px';
-            canvas.style.height = displayHeight + 'px';
+            // Не меняем размер отображения - фрейм остается того же размера
+            // canvas.style.width и canvas.style.height не устанавливаем
 
             const imgData = ctx.createImageData(info.width, info.height);
 
@@ -890,31 +885,33 @@
                 }
             }
 
-            // Создаем временный canvas для масштабирования
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = info.width;
-            tempCanvas.height = info.height;
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.putImageData(imgData, 0, 0);
+            // Очищаем canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Применяем масштаб и смещение
+            ctx.save();
+            
+            // Смещаем начало координат
+            ctx.translate(mapPanX, mapPanY);
+            
+            // Применяем масштаб
+            ctx.scale(mapScale, mapScale);
+            
+            // Рисуем карту
+            ctx.putImageData(imgData, 0, 0);
 
-            // Рисуем систему координат на временном canvas
-            drawCoordinateSystem(tempCtx, info);
+            // Рисуем систему координат
+            drawCoordinateSystem(ctx, info);
 
             // Рисуем путь робота
-            drawRobotPath(tempCtx, info);
+            drawRobotPath(ctx, info);
 
             // Рисуем отмеченные точки
-            drawMapPoints(tempCtx, info);
+            drawMapPoints(ctx, info);
 
             // Рисуем робота
-            drawRobot(tempCtx, info);
-
-            // Применяем масштаб и смещение при копировании на основной canvas
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.save();
-            ctx.translate(mapPanX, mapPanY);
-            ctx.scale(mapScale, mapScale);
-            ctx.drawImage(tempCanvas, 0, 0);
+            drawRobot(ctx, info);
+            
             ctx.restore();
         }
 
@@ -1120,35 +1117,28 @@
             const canvas = document.getElementById('mapCanvas');
             const rect = canvas.getBoundingClientRect();
             
-            // Координаты мыши относительно canvas (с учетом масштаба отображения)
-            const displayWidth = canvas.width * mapScale;
-            const displayHeight = canvas.height * mapScale;
+            // Координаты мыши относительно canvas (в пикселях экрана)
+            const mouseCanvasX = mouseX - rect.left;
+            const mouseCanvasY = mouseY - rect.top;
             
-            // Координаты мыши относительно отображаемого canvas
-            const mouseCanvasX = (mouseX - rect.left);
-            const mouseCanvasY = (mouseY - rect.top);
-            
-            // Учитываем смещение (pan)
-            const adjustedX = mouseCanvasX - mapPanX;
-            const adjustedY = mouseCanvasY - mapPanY;
-            
-            // Преобразуем в координаты оригинальной карты (без масштаба)
-            const canvasX = adjustedX / mapScale;
-            const canvasY = adjustedY / mapScale;
+            // Учитываем смещение (pan) и масштаб
+            // Преобразуем координаты мыши в координаты карты с учетом трансформации
+            const adjustedX = (mouseCanvasX - mapPanX) / mapScale;
+            const adjustedY = (mouseCanvasY - mapPanY) / mapScale;
 
             const info = mapData.info;
             const originX = info.origin?.position?.x || 0;
             const originY = info.origin?.position?.y || 0;
             
             // Преобразуем пиксельные координаты мыши в мировые координаты
-            // canvasX, canvasY - координаты мыши на карте (0,0 = левый верхний угол экрана)
+            // adjustedX, adjustedY - координаты мыши на карте (0,0 = левый верхний угол экрана)
             // Нужно преобразовать в координаты карты (0,0 = левый нижний угол), затем в мировые
             
             // Инвертируем Y для преобразования из экранных координат в координаты карты
-            const mapY = info.height - 1 - canvasY;
+            const mapY = info.height - 1 - adjustedY;
             
             // Преобразуем пиксели карты в мировые координаты
-            const worldX = canvasX * info.resolution + originX;
+            const worldX = adjustedX * info.resolution + originX;
             const worldY = mapY * info.resolution + originY;
 
             return { x: worldX, y: worldY };
@@ -1259,31 +1249,19 @@
                 const mouseX = e.clientX - rect.left;
                 const mouseY = e.clientY - rect.top;
                 
-                // Получаем мировые координаты точки под курсором ДО масштабирования
-                const worldCoordsBefore = mouseToMapCoordinates(e.clientX, e.clientY);
+                // Получаем координаты точки под курсором в системе координат карты ДО масштабирования
+                const mouseXInMap = (mouseX - mapPanX) / mapScale;
+                const mouseYInMap = (mouseY - mapPanY) / mapScale;
                 
                 // Изменяем масштаб
                 const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
                 const newScale = Math.max(0.5, Math.min(5.0, mapScale * zoomFactor));
                 
-                // Вычисляем разницу масштаба
-                const scaleDiff = newScale / mapScale;
-                mapScale = newScale;
-                
                 // Корректируем смещение, чтобы точка под курсором осталась на месте
-                if (worldCoordsBefore) {
-                    const info = mapData.info;
-                    const originX = info.origin?.position?.x || 0;
-                    const originY = info.origin?.position?.y || 0;
-                    
-                    // Преобразуем мировые координаты в пиксели карты
-                    const pixelX = (worldCoordsBefore.x - originX) / info.resolution;
-                    const pixelY = info.height - 1 - (worldCoordsBefore.y - originY) / info.resolution;
-                    
-                    // Вычисляем новые смещения
-                    mapPanX = mouseX - pixelX * mapScale;
-                    mapPanY = mouseY - pixelY * mapScale;
-                }
+                mapPanX = mouseX - mouseXInMap * newScale;
+                mapPanY = mouseY - mouseYInMap * newScale;
+                
+                mapScale = newScale;
                 
                 drawMap();
             };
@@ -1550,9 +1528,14 @@
             const originX = info.origin?.position?.x || 0;
             const originY = info.origin?.position?.y || 0;
             
-            // Центрируем карту и сбрасываем смещение
-            mapPanX = 0;
-            mapPanY = 0;
+            // Центрируем карту в видимой области
+            const canvas = document.getElementById('mapCanvas');
+            const rect = canvas.getBoundingClientRect();
+            
+            // Центрируем карту в видимой области
+            mapPanX = (rect.width - info.width * mapScale) / 2;
+            mapPanY = (rect.height - info.height * mapScale) / 2;
+            
             drawMap();
             
             // Если origin в нуле, вычисляем центр карты
