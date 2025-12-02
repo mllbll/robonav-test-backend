@@ -166,6 +166,8 @@
             flex-direction: column;
             justify-content: center;
             min-height: 400px;
+            overflow: hidden;
+            position: relative;
         }
         .map-canvas {
             max-width: 100%;
@@ -236,6 +238,14 @@
         .map-canvas {
             cursor: crosshair;
             position: relative;
+            image-rendering: pixelated;
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+            max-width: 100%;
+            max-height: 100%;
+        }
+        .map-canvas:active {
+            cursor: grabbing;
         }
         .coordinates-display {
             position: absolute;
@@ -370,6 +380,7 @@
                         <button id="subscribeMap" class="btn-primary">Подписаться</button>
                         <button id="unsubscribeMap" class="btn-danger">Отключить</button>
                         <button id="centerMap" class="btn-primary">Центр</button>
+                        <button id="resetZoom" class="btn-primary">Сброс зума</button>
                         <button id="clearPoints" class="btn-danger">Очистить точки</button>
                         <button id="clearPath" class="btn-danger">Очистить путь</button>
                         <button id="emergencyStop" class="btn-danger" style="background: #dc3545; font-weight: bold;">СТОП</button>
@@ -470,6 +481,9 @@
         let invertX = false; // Инверсия оси X
         let invertY = false; // Инверсия оси Y
         let swapXY = false; // Поменять местами X и Y
+        let mapScale = 1.0; // Масштаб карты
+        let mapPanX = 0; // Смещение карты по X
+        let mapPanY = 0; // Смещение карты по Y
 
         // Загружаем конфигурацию робота при загрузке страницы
         async function loadRobotConfig() {
@@ -829,8 +843,17 @@
             const info = mapData.info;
             const data = mapData.data;
 
+            // Устанавливаем размер canvas с учетом масштаба
+            const displayWidth = Math.floor(info.width * mapScale);
+            const displayHeight = Math.floor(info.height * mapScale);
+            
+            // Сохраняем оригинальный размер для вычислений
             canvas.width = info.width;
             canvas.height = info.height;
+            
+            // Устанавливаем размер отображения
+            canvas.style.width = displayWidth + 'px';
+            canvas.style.height = displayHeight + 'px';
 
             const imgData = ctx.createImageData(info.width, info.height);
 
@@ -867,19 +890,32 @@
                 }
             }
 
-            ctx.putImageData(imgData, 0, 0);
+            // Создаем временный canvas для масштабирования
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = info.width;
+            tempCanvas.height = info.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.putImageData(imgData, 0, 0);
 
-            // Рисуем систему координат
-            drawCoordinateSystem(ctx, info);
+            // Рисуем систему координат на временном canvas
+            drawCoordinateSystem(tempCtx, info);
 
             // Рисуем путь робота
-            drawRobotPath(ctx, info);
+            drawRobotPath(tempCtx, info);
 
             // Рисуем отмеченные точки
-            drawMapPoints(ctx, info);
+            drawMapPoints(tempCtx, info);
 
             // Рисуем робота
-            drawRobot(ctx, info);
+            drawRobot(tempCtx, info);
+
+            // Применяем масштаб и смещение при копировании на основной canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(mapPanX, mapPanY);
+            ctx.scale(mapScale, mapScale);
+            ctx.drawImage(tempCanvas, 0, 0);
+            ctx.restore();
         }
 
         function drawCoordinateSystem(ctx, info) {
@@ -1084,20 +1120,28 @@
             const canvas = document.getElementById('mapCanvas');
             const rect = canvas.getBoundingClientRect();
             
-            // Масштабирование canvas (если canvas отображается не в реальном размере)
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
+            // Координаты мыши относительно canvas (с учетом масштаба отображения)
+            const displayWidth = canvas.width * mapScale;
+            const displayHeight = canvas.height * mapScale;
             
-            // Координаты мыши относительно canvas (в пикселях карты)
-            const canvasX = (mouseX - rect.left) * scaleX;
-            const canvasY = (mouseY - rect.top) * scaleY;
+            // Координаты мыши относительно отображаемого canvas
+            const mouseCanvasX = (mouseX - rect.left);
+            const mouseCanvasY = (mouseY - rect.top);
+            
+            // Учитываем смещение (pan)
+            const adjustedX = mouseCanvasX - mapPanX;
+            const adjustedY = mouseCanvasY - mapPanY;
+            
+            // Преобразуем в координаты оригинальной карты (без масштаба)
+            const canvasX = adjustedX / mapScale;
+            const canvasY = adjustedY / mapScale;
 
             const info = mapData.info;
             const originX = info.origin?.position?.x || 0;
             const originY = info.origin?.position?.y || 0;
             
             // Преобразуем пиксельные координаты мыши в мировые координаты
-            // canvasX, canvasY - координаты мыши на экране (0,0 = левый верхний угол)
+            // canvasX, canvasY - координаты мыши на карте (0,0 = левый верхний угол экрана)
             // Нужно преобразовать в координаты карты (0,0 = левый нижний угол), затем в мировые
             
             // Инвертируем Y для преобразования из экранных координат в координаты карты
@@ -1172,9 +1216,90 @@
                 }
             };
 
+            let isDragging = false;
+            let lastMouseX = 0;
+            let lastMouseY = 0;
+
+            const handleMouseDown = (e) => {
+                if (e.button === 0) { // Левая кнопка мыши
+                    isDragging = true;
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                    canvas.style.cursor = 'grabbing';
+                }
+            };
+
+            const handleMouseMovePan = (e) => {
+                if (isDragging) {
+                    const deltaX = e.clientX - lastMouseX;
+                    const deltaY = e.clientY - lastMouseY;
+                    
+                    mapPanX += deltaX;
+                    mapPanY += deltaY;
+                    
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                    
+                    drawMap();
+                }
+            };
+
+            const handleMouseUp = () => {
+                isDragging = false;
+                canvas.style.cursor = 'crosshair';
+            };
+
+            const handleWheel = (e) => {
+                if (!mapData) return;
+                
+                e.preventDefault();
+                e.stopPropagation();
+
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                
+                // Получаем мировые координаты точки под курсором ДО масштабирования
+                const worldCoordsBefore = mouseToMapCoordinates(e.clientX, e.clientY);
+                
+                // Изменяем масштаб
+                const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+                const newScale = Math.max(0.5, Math.min(5.0, mapScale * zoomFactor));
+                
+                // Вычисляем разницу масштаба
+                const scaleDiff = newScale / mapScale;
+                mapScale = newScale;
+                
+                // Корректируем смещение, чтобы точка под курсором осталась на месте
+                if (worldCoordsBefore) {
+                    const info = mapData.info;
+                    const originX = info.origin?.position?.x || 0;
+                    const originY = info.origin?.position?.y || 0;
+                    
+                    // Преобразуем мировые координаты в пиксели карты
+                    const pixelX = (worldCoordsBefore.x - originX) / info.resolution;
+                    const pixelY = info.height - 1 - (worldCoordsBefore.y - originY) / info.resolution;
+                    
+                    // Вычисляем новые смещения
+                    mapPanX = mouseX - pixelX * mapScale;
+                    mapPanY = mouseY - pixelY * mapScale;
+                }
+                
+                drawMap();
+            };
+
             // Добавляем обработчики
-            canvas.addEventListener('mousemove', handleMouseMove);
-            canvas.addEventListener('mouseleave', handleMouseLeave);
+            canvas.addEventListener('mousemove', (e) => {
+                handleMouseMove(e);
+                handleMouseMovePan(e);
+            });
+            canvas.addEventListener('mouseleave', () => {
+                handleMouseLeave();
+                handleMouseUp();
+            });
+            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('wheel', handleWheel, { passive: false });
             canvas.addEventListener('click', handleClick, { once: false, passive: false });
 
             mapMouseEventsSetup = true;
@@ -1425,6 +1550,11 @@
             const originX = info.origin?.position?.x || 0;
             const originY = info.origin?.position?.y || 0;
             
+            // Центрируем карту и сбрасываем смещение
+            mapPanX = 0;
+            mapPanY = 0;
+            drawMap();
+            
             // Если origin в нуле, вычисляем центр карты
             if (originX === 0 && originY === 0) {
                 const centerX = (info.width * info.resolution) / 2;
@@ -1433,6 +1563,16 @@
             } else {
                 updateMapStatus(`Origin карты: (${originX.toFixed(2)}, ${originY.toFixed(2)})`);
             }
+        }
+
+        function resetZoom() {
+            mapScale = 1.0;
+            mapPanX = 0;
+            mapPanY = 0;
+            if (mapData) {
+                drawMap();
+            }
+            updateMapStatus('Масштаб сброшен');
         }
 
         // Обработка сообщений одометрии
@@ -1765,6 +1905,7 @@
         document.getElementById('subscribeMap').onclick = subscribeMap;
         document.getElementById('unsubscribeMap').onclick = unsubscribeMap;
         document.getElementById('centerMap').onclick = centerMap;
+        document.getElementById('resetZoom').onclick = resetZoom;
         document.getElementById('clearPoints').onclick = clearMapPoints;
         document.getElementById('clearPath').onclick = clearRobotPath;
         document.getElementById('emergencyStop').onclick = emergencyStop;
