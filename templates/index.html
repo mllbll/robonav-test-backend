@@ -573,7 +573,7 @@
                 } else if (msg.topic === '/args_map') {
                     console.log('Получено сообщение из args_map:', msg);
                     handleArgsMapMessage(msg);
-                } else if (msg.topic && (msg.topic.includes('odom') || msg.topic.includes('wheeled_base_controller/odom'))) {
+                } else if (msg.topic === '/lio_sam/mapping/odometry') {
                     handleOdomMessage(msg);
                 } else if (msg.topic && (msg.topic.includes('task_status') || msg.topic.includes('mission_status'))) {
                     handleTaskStatusMessage(msg);
@@ -1437,17 +1437,10 @@
                 return;
             }
 
-            // Пробуем разные топики одометрии
-            const odomTopics = [
-                '/wheeled_base_controller/odom',
-                '/odom',
-                '/robot/odom'
-            ];
-
-            // Подписываемся на первый топик
+            // Подписываемся на топик одометрии LIO-SAM
             const subscribeMsg = {
                 op: 'subscribe',
-                topic: odomTopics[0],
+                topic: '/lio_sam/mapping/odometry',
                 type: 'nav_msgs/Odometry'
             };
 
@@ -1488,7 +1481,7 @@
 
             const unsubscribeMsg = {
                 op: 'unsubscribe',
-                topic: '/wheeled_base_controller/odom'
+                topic: '/lio_sam/mapping/odometry'
             };
 
             ws.send(JSON.stringify(unsubscribeMsg));
