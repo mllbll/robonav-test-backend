@@ -388,6 +388,13 @@
                         <button id="applyOffset" class="btn-primary" style="padding: 2px 8px; font-size: 11px;">Применить</button>
                         <button id="resetOffset" class="btn-danger" style="padding: 2px 8px; font-size: 11px;">Сбросить</button>
                     </div>
+                    <div class="controls-row" style="margin-top: 8px; font-size: 11px; color: #6c757d;">
+                        <span>Коррекция осей:</span>
+                        <label><input type="checkbox" id="invertX"> Инвертировать X</label>
+                        <label style="margin-left: 10px;"><input type="checkbox" id="invertY"> Инвертировать Y</label>
+                        <label style="margin-left: 10px;"><input type="checkbox" id="swapXY"> Поменять X↔Y</label>
+                        <button id="applyAxisCorrection" class="btn-primary" style="padding: 2px 8px; font-size: 11px; margin-left: 10px;">Применить</button>
+                    </div>
                     <div id="taskStatus" style="margin-top: 8px; padding: 8px; background: #d1ecf1; border-radius: 4px; font-size: 12px; display: none;">
                         <strong>Статус задания:</strong> <span id="taskStatusText">Ожидание...</span>
                     </div>
@@ -460,6 +467,9 @@
         let taskStatusSubscribed = false; // Флаг подписки на статус задания
         let offsetX = 0; // Коррекция смещения по X
         let offsetY = 0; // Коррекция смещения по Y
+        let invertX = false; // Инверсия оси X
+        let invertY = false; // Инверсия оси Y
+        let swapXY = false; // Поменять местами X и Y
 
         // Загружаем конфигурацию робота при загрузке страницы
         async function loadRobotConfig() {
@@ -825,26 +835,36 @@
             const imgData = ctx.createImageData(info.width, info.height);
 
             // Рисуем карту
-            for (let i = 0; i < data.length; i++) {
-                const value = data[i];
-                let color;
+            // В ROS карте данные хранятся построчно снизу вверх (row-major order)
+            // Индекс = row * width + col, где row 0 - это нижняя строка
+            // На экране row 0 - это верхняя строка, поэтому нужно инвертировать Y
+            for (let row = 0; row < info.height; row++) {
+                for (let col = 0; col < info.width; col++) {
+                    // Индекс в данных карты (снизу вверх)
+                    const mapIndex = row * info.width + col;
+                    const value = data[mapIndex];
+                    
+                    let color;
+                    if (value === -1) {
+                        color = [128, 128, 128]; // Неизвестная область - серый
+                    } else if (value === 0) {
+                        color = [255, 255, 255]; // Свободное пространство - белый
+                    } else if (value >= 1 && value <= 100) {
+                        const intensity = Math.floor((100 - value) * 2.55);
+                        color = [intensity, intensity, intensity]; // Препятствие - темный
+                    } else {
+                        color = [255, 0, 0]; // Неизвестное значение - красный
+                    }
 
-                if (value === -1) {
-                    color = [128, 128, 128]; // Неизвестная область - серый
-                } else if (value === 0) {
-                    color = [255, 255, 255]; // Свободное пространство - белый
-                } else if (value >= 1 && value <= 100) {
-                    const intensity = Math.floor((100 - value) * 2.55);
-                    color = [intensity, intensity, intensity]; // Препятствие - темный
-                } else {
-                    color = [255, 0, 0]; // Неизвестное значение - красный
+                    // Индекс в ImageData (сверху вниз) - инвертируем Y
+                    const screenRow = info.height - 1 - row;
+                    const pixelIndex = (screenRow * info.width + col) * 4;
+                    
+                    imgData.data[pixelIndex] = color[0];
+                    imgData.data[pixelIndex + 1] = color[1];
+                    imgData.data[pixelIndex + 2] = color[2];
+                    imgData.data[pixelIndex + 3] = 255;
                 }
-
-                const pixelIndex = i * 4;
-                imgData.data[pixelIndex] = color[0];
-                imgData.data[pixelIndex + 1] = color[1];
-                imgData.data[pixelIndex + 2] = color[2];
-                imgData.data[pixelIndex + 3] = 255;
             }
 
             ctx.putImageData(imgData, 0, 0);
@@ -918,17 +938,47 @@
             const originY = info.origin?.position?.y || 0;
             
             // Применяем коррекцию смещения
-            const correctedX = worldX + offsetX;
-            const correctedY = worldY + offsetY;
+            let correctedX = worldX + offsetX;
+            let correctedY = worldY + offsetY;
+            
+            // Применяем перестановку осей, если включена
+            if (swapXY) {
+                [correctedX, correctedY] = [correctedY, correctedX];
+            }
+            
+            // Применяем инверсию осей
+            if (invertX) {
+                correctedX = -correctedX;
+            }
+            if (invertY) {
+                correctedY = -correctedY;
+            }
             
             // Преобразуем мировые координаты в пиксели карты
-            // origin - это координаты левого нижнего угла карты в мировых координатах
-            // resolution - размер пикселя в метрах
-            const pixelX = Math.floor((correctedX - originX) / info.resolution);
-            // В ROS карте Y растет вверх, но на экране Y растет вниз, поэтому инвертируем
-            const pixelY = info.height - Math.floor((correctedY - originY) / info.resolution);
+            // В ROS карте:
+            // - origin.position - это координаты левого нижнего угла карты в мировых координатах
+            // - resolution - размер пикселя в метрах
+            // - Данные карты хранятся построчно снизу вверх (row 0 = нижняя строка)
+            // - Пиксель (0,0) на карте соответствует origin
+            //
+            // На экране:
+            // - (0,0) - это левый верхний угол
+            // - Y растет вниз
+            //
+            // Преобразование:
+            // pixelX = (worldX - originX) / resolution
+            // pixelY на карте = (worldY - originY) / resolution (снизу вверх)
+            // pixelY на экране = height - pixelY на карте (инвертируем)
             
-            return { x: pixelX, y: pixelY };
+            const pixelX = Math.floor((correctedX - originX) / info.resolution);
+            const pixelYOnMap = Math.floor((correctedY - originY) / info.resolution);
+            const pixelY = info.height - 1 - pixelYOnMap; // Инвертируем Y для экрана
+            
+            // Ограничиваем координаты границами карты (с небольшим запасом для отображения)
+            const boundedX = Math.max(-50, Math.min(info.width + 50, pixelX));
+            const boundedY = Math.max(-50, Math.min(info.height + 50, pixelY));
+            
+            return { x: boundedX, y: boundedY };
         }
 
         function drawMapPoints(ctx, info) {
@@ -1046,11 +1096,16 @@
             const originX = info.origin?.position?.x || 0;
             const originY = info.origin?.position?.y || 0;
             
-            // Преобразуем пиксельные координаты в мировые
-            // В ROS карте начало координат находится в левом нижнем углу
-            // origin.position - это координаты левого нижнего угла карты в мировых координатах
+            // Преобразуем пиксельные координаты мыши в мировые координаты
+            // canvasX, canvasY - координаты мыши на экране (0,0 = левый верхний угол)
+            // Нужно преобразовать в координаты карты (0,0 = левый нижний угол), затем в мировые
+            
+            // Инвертируем Y для преобразования из экранных координат в координаты карты
+            const mapY = info.height - 1 - canvasY;
+            
+            // Преобразуем пиксели карты в мировые координаты
             const worldX = canvasX * info.resolution + originX;
-            const worldY = (info.height - canvasY) * info.resolution + originY;
+            const worldY = mapY * info.resolution + originY;
 
             return { x: worldX, y: worldY };
         }
@@ -1398,18 +1453,19 @@
                     1 - 2 * (q.y * q.y + q.z * q.z)
                 );
 
-                // Отладочная информация
-                if (mapData && mapData.info) {
+                // Отладочная информация (только периодически, чтобы не засорять консоль)
+                if (mapData && mapData.info && robotPath.length % 10 === 0) {
                     const pixel = worldToPixel(robotPosition.x, robotPosition.y, mapData.info);
                     const originX = mapData.info.origin?.position?.x || 0;
                     const originY = mapData.info.origin?.position?.y || 0;
                     
                     console.log('Робот:', {
-                        world: { x: robotPosition.x.toFixed(2), y: robotPosition.y.toFixed(2) },
+                        world: { x: robotPosition.x.toFixed(2), y: robotPosition.y.toFixed(2), yaw: (robotPosition.yaw * 180 / Math.PI).toFixed(1) + '°' },
                         pixel: { x: pixel.x, y: pixel.y },
                         origin: { x: originX, y: originY },
                         resolution: mapData.info.resolution,
-                        mapSize: { width: mapData.info.width, height: mapData.info.height }
+                        mapSize: { width: mapData.info.width, height: mapData.info.height },
+                        corrections: { offsetX, offsetY, invertX, invertY, swapXY }
                     });
                 }
 
@@ -1716,6 +1772,7 @@
         document.getElementById('unsubscribeOdom').onclick = unsubscribeOdom;
         document.getElementById('applyOffset').onclick = applyOffset;
         document.getElementById('resetOffset').onclick = resetOffset;
+        document.getElementById('applyAxisCorrection').onclick = applyAxisCorrection;
 
         function applyOffset() {
             offsetX = parseFloat(document.getElementById('offsetX').value) || 0;
@@ -1737,6 +1794,17 @@
                 drawMap();
             }
             updateStatus('Смещение сброшено', 'info');
+        }
+
+        function applyAxisCorrection() {
+            invertX = document.getElementById('invertX').checked;
+            invertY = document.getElementById('invertY').checked;
+            swapXY = document.getElementById('swapXY').checked;
+            console.log('Коррекция осей применена:', { invertX, invertY, swapXY });
+            if (mapData) {
+                drawMap();
+            }
+            updateStatus(`Коррекция осей: X${invertX ? ' инвертирован' : ''} Y${invertY ? ' инвертирован' : ''} ${swapXY ? 'X↔Y поменяны' : ''}`, 'info');
         }
         document.getElementById('sendPoints').onclick = sendPointsToArgsMap;
         document.getElementById('subscribeArgsMap').onclick = subscribeArgsMap;
