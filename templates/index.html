@@ -1120,11 +1120,16 @@
             const rect = canvas.getBoundingClientRect();
             
             // Координаты мыши относительно canvas (в пикселях экрана)
-            const mouseCanvasX = mouseX - rect.left;
-            const mouseCanvasY = mouseY - rect.top;
+            // Учитываем масштабирование canvas через CSS (если есть)
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
             
-            // Учитываем смещение (pan) и масштаб
+            const mouseCanvasX = (mouseX - rect.left) * scaleX;
+            const mouseCanvasY = (mouseY - rect.top) * scaleY;
+            
             // Преобразуем координаты мыши в координаты карты с учетом трансформации
+            // В Canvas API порядок операций: translate, затем scale
+            // Обратное преобразование: сначала убираем смещение, затем делим на масштаб
             const adjustedX = (mouseCanvasX - mapPanX) / mapScale;
             const adjustedY = (mouseCanvasY - mapPanY) / mapScale;
 
@@ -1133,13 +1138,16 @@
             const originY = info.origin?.position?.y || 0;
             
             // Преобразуем пиксельные координаты мыши в мировые координаты
-            // adjustedX, adjustedY - координаты мыши на карте (0,0 = левый верхний угол экрана)
-            // Нужно преобразовать в координаты карты (0,0 = левый нижний угол), затем в мировые
+            // adjustedX, adjustedY - координаты мыши на карте в пикселях (0,0 = левый верхний угол карты на экране)
+            // В ROS карте: (0,0) в пикселях = левый нижний угол карты, Y растет вверх
+            // На экране: (0,0) = левый верхний угол, Y растет вниз
+            // Поэтому нужно инвертировать Y для преобразования в координаты ROS карты
             
-            // Инвертируем Y для преобразования из экранных координат в координаты карты
+            // Инвертируем Y: экранные координаты (Y вниз) -> координаты карты ROS (Y вверх)
             const mapY = info.height - 1 - adjustedY;
             
             // Преобразуем пиксели карты в мировые координаты
+            // adjustedX - это колонка (X), mapY - это строка (Y)
             const worldX = adjustedX * info.resolution + originX;
             const worldY = mapY * info.resolution + originY;
 
@@ -1173,6 +1181,11 @@
             const handleClick = (e) => {
                 if (!mapData) return;
                 
+                // Игнорируем клик колесиком мыши (для перемещения)
+                if (e.button === 1) {
+                    return;
+                }
+                
                 // Предотвращаем множественные клики (debounce)
                 const now = Date.now();
                 if (now - lastClickTime < 200) {
@@ -1186,6 +1199,14 @@
 
                 const coords = mouseToMapCoordinates(e.clientX, e.clientY);
                 if (coords) {
+                    console.log('Клик мыши:', {
+                        screen: { x: e.clientX, y: e.clientY },
+                        canvas: { x: e.clientX - canvas.getBoundingClientRect().left, y: e.clientY - canvas.getBoundingClientRect().top },
+                        pan: { x: mapPanX, y: mapPanY },
+                        scale: mapScale,
+                        world: coords
+                    });
+                    
                     // Проверяем, нет ли уже точки в этом месте (с точностью до 0.1м)
                     const isDuplicate = mapPoints.some(point => 
                         Math.abs(point.x - coords.x) < 0.1 && Math.abs(point.y - coords.y) < 0.1
@@ -1216,22 +1237,35 @@
                 if (e.button === 1) { // Колесико мыши (middle button)
                     e.preventDefault(); // Предотвращаем прокрутку страницы
                     isDragging = true;
-                    lastMouseX = e.clientX;
-                    lastMouseY = e.clientY;
+                    const rect = canvas.getBoundingClientRect();
+                    const scaleX = canvas.width / rect.width;
+                    const scaleY = canvas.height / rect.height;
+                    lastMouseX = (e.clientX - rect.left) * scaleX;
+                    lastMouseY = (e.clientY - rect.top) * scaleY;
                     canvas.style.cursor = 'grabbing';
                 }
             };
 
             const handleMouseMovePan = (e) => {
                 if (isDragging) {
-                    const deltaX = e.clientX - lastMouseX;
-                    const deltaY = e.clientY - lastMouseY;
+                    const canvas = document.getElementById('mapCanvas');
+                    const rect = canvas.getBoundingClientRect();
+                    
+                    // Учитываем масштабирование canvas через CSS (если есть)
+                    const scaleX = canvas.width / rect.width;
+                    const scaleY = canvas.height / rect.height;
+                    
+                    const currentMouseX = (e.clientX - rect.left) * scaleX;
+                    const currentMouseY = (e.clientY - rect.top) * scaleY;
+                    
+                    const deltaX = currentMouseX - lastMouseX;
+                    const deltaY = currentMouseY - lastMouseY;
                     
                     mapPanX += deltaX;
                     mapPanY += deltaY;
                     
-                    lastMouseX = e.clientX;
-                    lastMouseY = e.clientY;
+                    lastMouseX = currentMouseX;
+                    lastMouseY = currentMouseY;
                     
                     drawMap();
                 }
@@ -1249,8 +1283,13 @@
                 e.stopPropagation();
 
                 const rect = canvas.getBoundingClientRect();
-                const mouseX = e.clientX - rect.left;
-                const mouseY = e.clientY - rect.top;
+                
+                // Учитываем масштабирование canvas через CSS (если есть)
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                
+                const mouseX = (e.clientX - rect.left) * scaleX;
+                const mouseY = (e.clientY - rect.top) * scaleY;
                 
                 // Получаем координаты точки под курсором в системе координат карты ДО масштабирования
                 const mouseXInMap = (mouseX - mapPanX) / mapScale;
